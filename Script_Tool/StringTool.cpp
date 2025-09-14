@@ -34,13 +34,22 @@ std::wstring ConvertToUtf16(const std::string& str)
 	return wide_buffer;
 }
 
-std::string ConertToGBK(const std::wstring& str)
+std::string ConvertToGBK(const std::wstring& str)
 {
 	if (str.empty()) return "";
 	int gbk_len = WideCharToMultiByte(936, 0, str.c_str(), str.length(), NULL, 0, NULL, NULL);
 	std::string gbk_buffer(gbk_len, 0);
 	WideCharToMultiByte(936, 0, str.c_str(), str.length(), &gbk_buffer[0], gbk_len, NULL, NULL);
 	return gbk_buffer;
+}
+
+std::string ConvertToSjis(const std::wstring& str)
+{
+	if (str.empty()) return "";
+	int sjis_len = WideCharToMultiByte(932, 0, str.c_str(), str.length(), NULL, 0, NULL, NULL);
+	std::string sjis_buffer(sjis_len, 0);
+	WideCharToMultiByte(932, 0, str.c_str(), str.length(), &sjis_buffer[0], sjis_len, NULL, NULL);
+	return sjis_buffer;
 }
 
 unsigned int ReadInt(size_t& fs, std::vector<char>& buffer)

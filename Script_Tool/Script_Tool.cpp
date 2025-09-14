@@ -46,22 +46,14 @@ bool ScriptParser::Parser(MalieExec& script)
 	m_cursor = 0x13F920;  //Script Offset
 	auto scriptsize = ReadInt(m_cursor, m_buffer);
 
-	if (m_cursor < (ScriptOffset + scriptsize)) {
-		script.StringSegement.push_back(ParseSplit());
-	}
-
 	while (m_cursor < (ScriptOffset + scriptsize))
 	{
-		if (PeekByte(0) == 0x07 && PeekByte(1) == 0x06)
+		script.StringSegement.push_back(ParseSplit());
+
+		if (PeekByte(0) == 0x07 && PeekByte(1) == 0x06 && PeekByte(2) == 0x00)
 		{
 			m_cursor += 3; // skip 07 06 00
 			std::cout << "Pos:" << m_cursor << std::endl;
-			if (m_cursor >= (ScriptOffset + scriptsize)) break;
-			script.StringSegement.push_back(ParseSplit());
-		}
-		else
-		{
-			break;
 		}
 	}
 	return true;
@@ -163,9 +155,13 @@ TextSegment ScriptParser::ParseSplit()
 
 	while (m_cursor < m_size)
 	{
-		if (PeekByte(0) == 0x07 && PeekByte(1) == 0x06)  //Text End
+		if (PeekByte(0) == 0x07 && PeekByte(1) == 0x06 && PeekByte(2) == 0x00)  //Text End
 		{
 			break;
+		}
+		else if (PeekByte(0) == 0x07 && PeekByte(1) == 0x06)
+		{
+			std::cout << "* Not 0x070600 at Pos:" << m_cursor << std::endl;
 		}
 
 		segement.Text.push_back(ReadByte());
@@ -176,15 +172,14 @@ TextSegment ScriptParser::ParseSplit()
 std::wstring ScriptParser::ParseStringSegement(std::vector<unsigned char> TextBuff)
 {
 	std::wstringstream wss;
-	std::stringstream ss;
+	std::string ss;
 	size_t fs = 0;
 
 	auto flushtowss = [&]() {
-		if (!ss.str().empty()) {
-			auto temp = ConvertToUtf16(ss.str());
+		if (!ss.empty()) {
+			auto temp = ConvertToUtf16(ss);
 			wss << temp;
 		}
-		ss.str("");
 		ss.clear();
 		};
 
@@ -192,27 +187,32 @@ std::wstring ScriptParser::ParseStringSegement(std::vector<unsigned char> TextBu
 	while (fs < TextBuff.size())
 	{
 		auto code = TextBuff[fs];
-		fs++;
 		bool isSjis = false;
 
 		if ((code >= 0x81 && code <= 0x9F) || (code >= 0xE0 && code <= 0xFC)) {
-			if (fs < TextBuff.size()) {
-				unsigned char second_byte = TextBuff[fs];
+			if (fs + 1 < TextBuff.size()) {
+				unsigned char second_byte = TextBuff[fs + 1];
 				if ((second_byte >= 0x40 && second_byte <= 0x7E) || (second_byte >= 0x80 && second_byte <= 0xFC)) {
 					isSjis = true;
-					ss << code << TextBuff[fs++];
+					ss.push_back(code);
+					ss.push_back(second_byte);
+					fs += 2;
+					continue;
 				}
 			}
 		}
 		else if ((code >= 0x20 && code <= 0x7E) || (code >= 0xA1 && code <= 0xDF)) {
 			isSjis = true;
-			ss << code;
+			ss.push_back(code);
+			fs++;
+			continue;
 		}
 
 
 		if (!isSjis)
 		{
 			flushtowss();
+			fs++;
 			if (code == 0x07)
 			{
 				auto cmd = TextBuff[fs++];
@@ -231,6 +231,9 @@ std::wstring ScriptParser::ParseStringSegement(std::vector<unsigned char> TextBu
 				}
 				case 0x04:
 					wss << L"[0704]";
+					break;
+				case 0x06:
+					wss << L"[End]";
 					break;
 				case 0x09:  //VoiceEnd
 					wss << L"[/Voice]";
@@ -259,9 +262,16 @@ void ScriptParser::ExportTotxt(MalieExec& script)
 	unsigned char bom[2] = { 0xFF, 0xFE };
 	outfile.write(reinterpret_cast<char*>(bom), 2);
 
+	bool first = true;
 	for (const auto& segement : script.StringSegement)
 	{
 		std::wstring line;
+		if (!first)
+		{
+			line += L'\n';
+			line += L'\n';
+		}
+
 		if (!segement.Voice.empty())
 		{
 			auto voice = ConvertToUtf16(segement.Voice.c_str());
@@ -270,9 +280,8 @@ void ScriptParser::ExportTotxt(MalieExec& script)
 
 		auto text = ParseStringSegement(segement.Text);
 		line += text;
-		line += L'\n';
-		line += L'\n';
 		outfile.write(reinterpret_cast<const char*>(line.data()), line.size() * sizeof(wchar_t));
+		first = false;
 	}
 }
 
@@ -302,12 +311,213 @@ void ScriptParser::ExportOthers(MalieExec& script)
 }
 
 
+class ScriptBuild
+{
+public:
+	ScriptBuild(const std::string& filename) : txtfilename(filename) {};
+	bool Build(MalieExec& script);
+	void ExportNewExec(MalieExec& script);
+private:
+	std::string txtfilename;
+	std::vector<unsigned char> SerializeText(std::wstring& text);
+};
+
+
+bool ScriptBuild::Build(MalieExec& script)
+{
+	std::ifstream infile(txtfilename, std::ios::binary);
+	if (!infile)
+	{
+		std::cout << "Read ScriptTxt failed" << std::endl;
+		return false;
+	}
+	infile.seekg(0, std::ios::end);
+	size_t file_size = infile.tellg();
+	infile.seekg(2, std::ios::beg);
+
+	std::vector<char> byte_buffer(file_size - 2);
+	infile.read(byte_buffer.data(), file_size - 2);
+	infile.close();
+
+	const wchar_t* ptr = reinterpret_cast<const wchar_t*>(byte_buffer.data());
+	size_t len = byte_buffer.size() / sizeof(wchar_t);
+	std::wstring segementText(ptr, len);
+
+	size_t pos = 0;
+	while (pos < segementText.length())
+	{
+		size_t next_separator = segementText.find(L"\n\n", pos);
+
+		std::wstring segment_block;
+		if (next_separator == std::wstring::npos)
+		{
+			segment_block = segementText.substr(pos);
+			pos = segementText.length();
+		}
+		else
+		{
+			segment_block = segementText.substr(pos, next_separator - pos);
+			pos = next_separator + 2;
+		}
+
+		if (segment_block.empty()) continue;
+		TextSegment seg;
+
+		if (segment_block.rfind(L"[Voice{", 0) == 0)
+		{
+			size_t voicestart = 7;  //[Voice{.length()
+			size_t voiceend = segment_block.find(L"}]", voicestart);
+			if (voiceend != std::wstring::npos)
+			{
+				std::wstring voice = segment_block.substr(voicestart, voiceend - voicestart);
+				//seg.Voice = ConvertToSjis(voice);
+				seg.Voice = ConvertToGBK(voice);
+				size_t textend = segment_block.find(L"[/Voice]");
+				auto text = segment_block.substr(voiceend + 2, textend - (voiceend + 2));
+				seg.Text = SerializeText(text);
+			}
+		}
+		else
+		{
+			seg.Text = SerializeText(segment_block);
+		}
+		script.StringSegement.push_back(seg);
+		std::cout << "Pos:" << pos << std::endl;
+	}
+	return true;
+}
+
+std::vector<unsigned char> ScriptBuild::SerializeText(std::wstring& text)
+{
+	std::vector<unsigned char> buffer;
+	size_t pos = 0;
+
+	while (pos < text.length())
+	{
+		auto tagbegin = text.find(L"[", pos);
+		if (tagbegin == std::wstring::npos) tagbegin = text.length();
+
+		if (tagbegin > pos)
+		{
+			std::wstring textchunk = text.substr(pos, tagbegin - pos);
+			//std::string chunk = ConvertToSjis(textchunk);
+			std::string chunk = ConvertToGBK(textchunk);
+			buffer.insert(buffer.end(), chunk.begin(), chunk.end());
+		}
+
+		pos = tagbegin;
+		if (pos >= text.length()) break;
+
+		if (text.compare(pos, 6, L"[Ruby]") == 0)
+		{
+			size_t tagend = text.find(L"[/Ruby]", pos);
+			if (tagend != std::wstring::npos)
+			{
+				std::wstring ruby = text.substr(pos + 6, tagend - (pos + 6));
+
+				buffer.push_back(0x07);
+				buffer.push_back(0x01);
+				auto rubyencode = ConvertToSjis(ruby);
+				buffer.insert(buffer.end(), rubyencode.begin(), rubyencode.end());
+				buffer.push_back(0x0A);
+				pos = tagend + 7;
+				continue;
+			}
+		}
+		else if (text.compare(pos, 5, L"[End]") == 0)
+		{
+			buffer.push_back(0x07);
+			buffer.push_back(0x06);
+			pos += 5;
+		}
+		else if (text.compare(pos, 6, L"[0704]") == 0)
+		{
+			buffer.push_back(0x07);
+			buffer.push_back(0x04);
+			pos += 6;
+		}
+		else if (text.compare(pos, 5, L"[hex:") == 0)
+		{
+			size_t hexend = text.find(L"]", pos);
+			if (hexend != std::wstring::npos)
+			{
+				std::wstring hex_str = text.substr(pos + 5, hexend - (pos + 5));
+				int val = std::stoi(hex_str, nullptr, 16);
+				buffer.push_back(static_cast<unsigned char>(val));
+				pos = hexend + 1;
+			}
+		}
+	}
+	return buffer;
+}
+
+void ScriptBuild::ExportNewExec(MalieExec& script)
+{
+	std::ifstream infile("exec.dat", std::ios::binary);
+	if (!infile)
+	{
+		std::cout << "Original exec.dat connot find" << std::endl;
+	}
+
+	std::vector<char> oribuffer = std::vector<char>((std::istreambuf_iterator<char>(infile)), std::istreambuf_iterator<char>());
+	infile.close();
+
+	std::vector<unsigned char> scriptblock;
+	scriptblock.insert(scriptblock.end(), { 0x00, 0x00, 0x00, 0x00 });
+
+	for (auto seg : script.StringSegement)
+	{
+		if (!seg.Voice.empty())
+		{
+			scriptblock.push_back(0x07);
+			scriptblock.push_back(0x08);
+			scriptblock.insert(scriptblock.end(), seg.Voice.begin(), seg.Voice.end());
+			scriptblock.push_back(0x00);
+			scriptblock.insert(scriptblock.end(), seg.Text.begin(), seg.Text.end());
+			scriptblock.push_back(0x07);
+			scriptblock.push_back(0x09);
+			scriptblock.push_back(0x07);
+			scriptblock.push_back(0x06);
+			scriptblock.push_back(0x00);
+		}
+		else
+		{
+			scriptblock.insert(scriptblock.end(), seg.Text.begin(), seg.Text.end());
+			scriptblock.push_back(0x07);
+			scriptblock.push_back(0x06);
+			scriptblock.push_back(0x00);
+		}
+	}
+
+	auto size = scriptblock.size();
+	*reinterpret_cast<unsigned int*>(scriptblock.data()) = size - 4;
+
+	std::ofstream outfile("execNew.dat", std::ios::binary | std::ios::trunc);
+
+	outfile.write(oribuffer.data(), ScriptOffset);
+	outfile.write(reinterpret_cast<const char*>(scriptblock.data()), size);
+
+	size_t fs = ScriptOffset;
+	auto oriscripsize = ReadInt(fs, oribuffer);
+
+	outfile.write(&oribuffer[ScriptOffset + 4 + oriscripsize ], oribuffer.size() - (ScriptOffset + 4 + oriscripsize));
+	outfile.close();
+}
+
+
 int main(int argc, char* argv[])
 {
 	MalieExec Script;
 
+#if false
 	ScriptParser parser("exec.dat");
 	parser.Parser(Script);
 	parser.ExportTotxt(Script);
 	//parser.ExportOthers(Script);
+#else
+	ScriptBuild builder("exec.txt");
+	builder.Build(Script);
+	builder.ExportNewExec(Script);
+#endif
+
 }
