@@ -62,5 +62,5 @@ public:
 	std::vector<std::unique_ptr<ExpressTree>> Express;
 	std::vector<unsigned char> ByteCode;
 	std::vector<TextSegment> StringSegement;
-	std::vector<unsigned char> Data;
+	std::vector<std::string> MsgSegement;
 };

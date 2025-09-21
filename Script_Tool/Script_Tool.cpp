@@ -22,6 +22,7 @@ private:
 	void ReadBytecode(MalieExec& script);
 	std::wstring  ParseStringSegement(std::vector<unsigned char> TextBuff);
 	TextSegment ParseSplit();
+	void ParseMsgSegement(MalieExec& script);
 	unsigned char ReadByte() { return m_buffer[m_cursor++]; }
 	unsigned char PeekByte(size_t offset)
 	{
@@ -39,6 +40,7 @@ bool ScriptParser::Parser(MalieExec& script)
 	}
 	m_buffer = std::vector<char>((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 	m_size = m_buffer.size();
+	file.close();
 
 	ParseFunctions(script);
 	ParseLabels(script);
@@ -56,6 +58,8 @@ bool ScriptParser::Parser(MalieExec& script)
 			std::cout << "Pos:" << m_cursor << std::endl;
 		}
 	}
+
+	ParseMsgSegement(script);
 	return true;
 }
 
@@ -254,6 +258,17 @@ std::wstring ScriptParser::ParseStringSegement(std::vector<unsigned char> TextBu
 	return wss.str();
 }
 
+void ScriptParser::ParseMsgSegement(MalieExec& script)
+{
+	auto size = ReadInt(m_cursor, m_buffer);
+	auto endpos = m_cursor + size;
+	while (m_cursor < endpos)
+	{
+		auto str = ReadString0(m_buffer, m_cursor);
+		script.MsgSegement.push_back(str);
+	}
+}
+
 void ScriptParser::ExportTotxt(MalieExec& script)
 {
 	std::ofstream outfile("exec.txt", std::ios::binary);
@@ -283,11 +298,26 @@ void ScriptParser::ExportTotxt(MalieExec& script)
 		outfile.write(reinterpret_cast<const char*>(line.data()), line.size() * sizeof(wchar_t));
 		first = false;
 	}
+	outfile.close();
+
+
+	std::ofstream outMsg("MsgStr.txt", std::ios::binary);
+	if (!outMsg) return;
+
+	outMsg.write(reinterpret_cast<char*>(bom), 2);
+
+	for (const auto& msg : script.MsgSegement)
+	{
+		std::wstring line = ConvertToUtf16(msg);
+		line += L'\n';
+		outMsg.write(reinterpret_cast<const char*>(line.data()), line.size() * sizeof(wchar_t));
+	}
+	outMsg.close();
 }
 
 void ScriptParser::ExportOthers(MalieExec& script)
 {
-	std::ofstream outfile("str.txt", std::ios::binary);
+	std::ofstream outfile("labelstr.txt", std::ios::binary);
 	if (!outfile) return;
 
 	unsigned char bom[2] = { 0xFF, 0xFE };
@@ -308,6 +338,7 @@ void ScriptParser::ExportOthers(MalieExec& script)
 		std::wstring line = wss.str();
 		outfile.write(reinterpret_cast<const char*>(line.data()), line.size() * sizeof(wchar_t));
 	}
+	outfile.close();
 }
 
 
@@ -320,6 +351,7 @@ public:
 private:
 	std::string txtfilename;
 	std::vector<unsigned char> SerializeText(std::wstring& text);
+	std::vector<unsigned char> SerializeMsg();
 };
 
 
@@ -451,6 +483,71 @@ std::vector<unsigned char> ScriptBuild::SerializeText(std::wstring& text)
 	return buffer;
 }
 
+std::vector<unsigned char> ScriptBuild::SerializeMsg()
+{
+	std::vector<unsigned char> buffer;
+	std::ifstream infile("MsgStr.txt", std::ios::binary);
+	if (!infile)
+	{
+		std::cout << "Read MsgFile failed" << std::endl;
+	}
+
+	infile.seekg(2, std::ios::beg);
+
+	auto ReadLine = [&]() -> std::wstring
+		{
+			std::wstring line;
+			wchar_t ch;
+
+			while (infile.read(reinterpret_cast<char*>(&ch), sizeof(wchar_t)))
+			{
+				if (ch == L'\n') break;
+				line.push_back(ch);
+			}
+
+			return line;
+		};
+	auto PeekLine = [&]() -> std::wstring
+		{
+			auto pos = infile.tellg();
+			std::wstring line;
+			wchar_t ch;
+
+			while (infile.read(reinterpret_cast<char*>(&ch), sizeof(wchar_t)))
+			{
+				if (ch == L'\n') break;
+				line.push_back(ch);
+			}
+			infile.clear();
+			infile.seekg(pos);
+			return line;
+		};
+
+	while (true)
+	{
+		auto current = ReadLine();
+		if (infile.eof() && current.empty()) break;
+		auto next = PeekLine();
+		if (!current.empty())
+		{
+			std::string str = ConvertToGBK(current);
+			buffer.insert(buffer.end(), str.begin(), str.end());
+		}
+		if (next.empty() && !current.empty())
+		{
+			buffer.push_back(0x0A);
+			buffer.push_back(0x00);
+		}
+		else if (!next.empty() && !current.empty())
+		{
+			buffer.push_back(0x00);
+		}
+		
+	}
+	return buffer;
+}
+
+
 void ScriptBuild::ExportNewExec(MalieExec& script)
 {
 	std::ifstream infile("exec.dat", std::ios::binary);
@@ -497,10 +594,14 @@ void ScriptBuild::ExportNewExec(MalieExec& script)
 	outfile.write(oribuffer.data(), ScriptOffset);
 	outfile.write(reinterpret_cast<const char*>(scriptblock.data()), size);
 
-	size_t fs = ScriptOffset;
-	auto oriscripsize = ReadInt(fs, oribuffer);
+	std::vector<unsigned char> msgblock;
+	auto msgdata = SerializeMsg();
+	uint32_t len = static_cast<uint32_t>(msgdata.size());
+	msgblock.resize(4 + len);
+	memcpy(msgblock.data(), &len, 4);
+	memcpy(msgblock.data() + 4, msgdata.data(), msgdata.size());
+	outfile.write(reinterpret_cast<const char*>(msgblock.data()), msgblock.size());
 
-	outfile.write(&oribuffer[ScriptOffset + 4 + oriscripsize ], oribuffer.size() - (ScriptOffset + 4 + oriscripsize));
 	outfile.close();
 }
 
@@ -509,14 +610,14 @@ int main(int argc, char* argv[])
 {
 	MalieExec Script;
 
-#if false
+#if false	
 	ScriptParser parser("exec.dat");
 	parser.Parser(Script);
 	parser.ExportTotxt(Script);
 	//parser.ExportOthers(Script);
 #else
 	ScriptBuild builder("exec.txt");
-	builder.Build(Script);
+	builder.Build(Script);  //Delete the last blank line of MsgStr.txt manually :(
 	builder.ExportNewExec(Script);
 #endif
 

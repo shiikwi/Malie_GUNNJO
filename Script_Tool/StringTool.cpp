@@ -8,7 +8,7 @@ std::string ReadString0(std::vector<char>& buffer, size_t& pt)
 	{
 		str += buffer[pt++];
 	}
-	pt++;
+	if (pt + 1 <= buffer.size()) pt++;
 
 	return str;
 }
@@ -25,7 +25,7 @@ std::string ReadStringUntil(std::vector<char>& buffer, size_t& pt, unsigned char
 	return str;
 }
 
-std::wstring ConvertToUtf16(const std::string& str) 
+std::wstring ConvertToUtf16(const std::string& str)
 {
 	if (str.empty()) return L"";
 	int wide_len = MultiByteToWideChar(932, 0, str.c_str(), str.length(), NULL, 0);
