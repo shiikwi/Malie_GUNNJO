@@ -149,6 +149,7 @@ TextSegment ScriptParser::ParseSplit()
 {
 	TextSegment segement;
 
+	segement.Offset = m_cursor - (ScriptOffset + 4);
 	if (PeekByte(0) == 0x07 && PeekByte(1) == 0x08)  //Voice
 	{
 		ReadByte();
@@ -287,6 +288,9 @@ void ScriptParser::ExportTotxt(MalieExec& script)
 			line += L'\n';
 		}
 
+		std::wstringstream wss;
+		wss << L"[Offset:" << std::hex << segement.Offset << L"]";
+		line += wss.str();
 		if (!segement.Voice.empty())
 		{
 			auto voice = ConvertToUtf16(segement.Voice.c_str());
@@ -395,9 +399,15 @@ bool ScriptBuild::Build(MalieExec& script)
 		if (segment_block.empty()) continue;
 		TextSegment seg;
 
-		if (segment_block.rfind(L"[Voice{", 0) == 0)
+		if (segment_block.rfind(L"[Offset:", 0) == 0)
 		{
-			size_t voicestart = 7;  //[Voice{.length()
+			auto m = swscanf_s(segment_block.c_str(), L"[Offset:%x]", &seg.Offset);
+			segment_block = segment_block.substr(segment_block.find(L"]") + 1);
+		}
+
+		if (segment_block.find(L"[Voice{") != std::wstring::npos)
+		{
+			size_t voicestart = segment_block.find(L"[Voice{") + 7;  //[Voice{.length()
 			size_t voiceend = segment_block.find(L"}]", voicestart);
 			if (voiceend != std::wstring::npos)
 			{
@@ -542,11 +552,40 @@ std::vector<unsigned char> ScriptBuild::SerializeMsg()
 		{
 			buffer.push_back(0x00);
 		}
-		
+
 	}
 	return buffer;
 }
 
+void ChangeOffset(std::map<size_t, size_t> map, std::vector<char>& buffer)
+{
+	size_t i = 0;
+	while (i < buffer.size() - 4)
+	{
+		if (buffer[i] == 0x06)
+		{
+			auto oldoff = *reinterpret_cast<unsigned int*>(&buffer[i + 1]);
+			if (oldoff == 0)
+			{
+				i += 4;
+				continue;
+			}
+			auto it = map.find(oldoff);
+			if (it != map.end())
+			{
+				auto newoff = it->second;
+				*reinterpret_cast<unsigned int*>(&buffer[i + 1]) = newoff;
+				std::cout << "Patch offset: 0x" << std::hex << oldoff << " to 0x" << newoff << std::endl;
+			}
+			i ++;
+		}
+		else
+		{
+			i++;
+		}
+	}
+	
+}
 
 void ScriptBuild::ExportNewExec(MalieExec& script)
 {
@@ -560,10 +599,12 @@ void ScriptBuild::ExportNewExec(MalieExec& script)
 	infile.close();
 
 	std::vector<unsigned char> scriptblock;
+	std::map<size_t, size_t> OffsetMap;
 	scriptblock.insert(scriptblock.end(), { 0x00, 0x00, 0x00, 0x00 });
 
 	for (auto seg : script.StringSegement)
 	{
+		OffsetMap[seg.Offset] = scriptblock.size() - 4;
 		if (!seg.Voice.empty())
 		{
 			scriptblock.push_back(0x07);
@@ -590,6 +631,8 @@ void ScriptBuild::ExportNewExec(MalieExec& script)
 	*reinterpret_cast<unsigned int*>(scriptblock.data()) = size - 4;
 
 	std::ofstream outfile("execNew.dat", std::ios::binary | std::ios::trunc);
+
+	ChangeOffset(OffsetMap, oribuffer);
 
 	outfile.write(oribuffer.data(), ScriptOffset);
 	outfile.write(reinterpret_cast<const char*>(scriptblock.data()), size);

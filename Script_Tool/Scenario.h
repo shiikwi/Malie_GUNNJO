@@ -7,6 +7,7 @@
 #include <memory>
 #include <Windows.h>
 #include <variant>
+#include <map>
 
 struct FunctionMan
 {
@@ -52,6 +53,7 @@ struct TextSegment
 {
 	std::string Voice;
 	std::vector<unsigned char> Text;
+	size_t Offset;
 };
 
 class MalieExec
